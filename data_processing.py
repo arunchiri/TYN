@@ -13,36 +13,40 @@ from torch.utils.data import Dataset
 from sklearn.preprocessing import StandardScaler
 
 
-# Feature column definitions
+# Feature column definitions for Titanic dataset
 NUMERIC_RAW = [
-    "ClaimAmount", "Reimbursement", "Clearinghouse_Edit_Count", 
-    "Days_To_Appeal", "Benefit_Limit"
+    "Age", "Fare", "SibSp", "Parch", "FamilySize", "FarePerPerson"
 ]
 
 BIN_RAW = [
-    "PriorAuth_Obtained", "Referral_Required"
+    "Pclass", "IsAlone"
 ]
 
 CAT_RAW = [
-    "PayerID", "ProviderID", "ICD10_Code", "CPT_Code", 
-    "HCPCS_Code", "Modifier", "DRG_Code", "Plan_Type"
+    "Sex", "Embarked", "AgeGroup"
 ]
 
-DATE_COLS = [
-    "ServiceDate", "Contracted_Submission_Date", "SubmissionDate", 
-    "ProcessedDate", "Coverage_Start_Date", "Coverage_End_Date"
-]
+DATE_COLS = []
 
-TARGET_STATUS = "DenialStatus"
-TARGET_CODE = "Denial_Code"
+TARGET_STATUS = "Survived"
+TARGET_CODE = "Survived"
 NONE_DENIAL = "None"
 
 
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Parse date columns to datetime format."""
+    """Parse date columns to datetime format and handle missing values."""
     for c in DATE_COLS:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce", utc=False)
+    
+    # Handle missing values for Titanic
+    if "Age" in df.columns:
+        df["Age"] = df["Age"].fillna(df["Age"].median())
+    if "Embarked" in df.columns:
+        df["Embarked"] = df["Embarked"].fillna(df["Embarked"].mode()[0] if len(df["Embarked"].mode()) > 0 else "S")
+    if "Fare" in df.columns:
+        df["Fare"] = df["Fare"].fillna(df["Fare"].median())
+    
     return df
 
 
@@ -63,46 +67,23 @@ def engineer_causal_features(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with engineered features added
     """
-    # Timely filing lateness (days late after contracted)
-    if "SubmissionDate" in df.columns and "Contracted_Submission_Date" in df.columns:
-        df["timely_days_late"] = _days_diff_pos(
-            df["SubmissionDate"], df["Contracted_Submission_Date"]
-        )
-    else:
-        df["timely_days_late"] = 0
-
-    # Over benefit amount (positive means over the limit)
-    if "ClaimAmount" in df.columns and "Benefit_Limit" in df.columns:
-        df["over_benefit_amt"] = (
-            df["ClaimAmount"].fillna(0) - df["Benefit_Limit"].fillna(0)
-        ).clip(lower=0)
-    else:
-        df["over_benefit_amt"] = 0
-
-    # Coverage gap (positive if coverage ended before service)
-    if "ServiceDate" in df.columns and "Coverage_End_Date" in df.columns:
-        df["coverage_gap_days"] = _days_diff_pos(
-            df["ServiceDate"], df["Coverage_End_Date"]
-        )
-    else:
-        df["coverage_gap_days"] = 0
-
-    # High edits indicator (binary)
-    if "Clearinghouse_Edit_Count" in df.columns:
-        df["high_edits"] = (
-            df["Clearinghouse_Edit_Count"].fillna(0) >= 5
-        ).astype(np.float32)
-    else:
-        df["high_edits"] = 0.0
-
-    # Processing lag (submission -> processed), potentially leakage-prone
-    if "ProcessedDate" in df.columns and "SubmissionDate" in df.columns:
-        df["proc_lag_days"] = _days_diff_pos(
-            df["ProcessedDate"], df["SubmissionDate"]
-        )
-    else:
-        df["proc_lag_days"] = 0
-
+    # For Titanic dataset, add meaningful feature engineering
+    
+    # Family size
+    if "SibSp" in df.columns and "Parch" in df.columns:
+        df["FamilySize"] = df["SibSp"] + df["Parch"] + 1
+        df["IsAlone"] = (df["FamilySize"] == 1).astype(float)
+    
+    # Age groups
+    if "Age" in df.columns:
+        df["Age"] = df["Age"].fillna(df["Age"].median())
+        df["AgeGroup"] = pd.cut(df["Age"], bins=[0, 18, 35, 60, 100], labels=["Child", "Adult", "Middle", "Elderly"]).astype(str)
+    
+    # Fare groups
+    if "Fare" in df.columns:
+        df["Fare"] = df["Fare"].fillna(df["Fare"].median())
+        df["FarePerPerson"] = df["Fare"] / df["FamilySize"].clip(lower=1)
+    
     return df
 
 
@@ -223,14 +204,12 @@ def get_feature_columns(guard_leakage: bool = False) -> Tuple[List[str], List[st
     Returns:
         Tuple of (numeric_cols, binary_cols)
     """
-    numeric_cols = NUMERIC_RAW + [
-        "timely_days_late", "over_benefit_amt", "coverage_gap_days", "proc_lag_days"
-    ]
-    binary_cols = BIN_RAW + ["high_edits"]
+    numeric_cols = NUMERIC_RAW
+    binary_cols = BIN_RAW
     
     if guard_leakage:
-        # Remove outcome-like fields for pre-submission prediction
-        numeric_cols = [c for c in numeric_cols if c not in {"Reimbursement", "proc_lag_days"}]
+        # No leakage-prone fields for Titanic dataset
+        pass
     
     return numeric_cols, binary_cols
 
@@ -297,9 +276,9 @@ class ClaimsDataset(Dataset):
                 lambda x: code_vocab.get(x, 0)
             ).astype(np.int64).values
 
-        # Environment (payer)
-        payer_vocab = vocabularies["PayerID"]
-        self.env = map_to_ids(df_loc["PayerID"], payer_vocab)
+        # Environment (Sex for Titanic)
+        env_vocab = vocabularies.get("Sex", {"<UNK>": 0})
+        self.env = map_to_ids(df_loc["Sex"] if "Sex" in df_loc.columns else pd.Series(["<UNK>"] * len(df_loc)), env_vocab)
 
         # Stable per-sample environment weights
         if env_weight_map is not None:
@@ -370,9 +349,9 @@ class DataProcessor:
         
         # Validate targets
         if TARGET_CODE not in df.columns:
-            raise ValueError("Denial_Code column missing from CSV.")
+            raise ValueError("Survived column missing from CSV.")
         if TARGET_STATUS not in df.columns:
-            raise ValueError("DenialStatus column missing from CSV.")
+            raise ValueError("Survived column missing from CSV.")
         
         # Get feature columns
         self.numeric_cols, self.binary_cols = get_feature_columns(self.guard_leakage)
@@ -419,20 +398,22 @@ class DataProcessor:
         for c in self.categorical_cols:
             self.vocabularies[c] = build_vocab(train_df[c], min_freq=self.min_freq)
         
-        # Build denial code vocabulary on denied-only rows
-        denied_train_codes = train_df.loc[train_df[TARGET_STATUS] == 1, TARGET_CODE]
-        self.vocabularies["_DENIAL_CODE_"] = build_vocab(denied_train_codes, min_freq=1)
-        self.num_denial_classes = len(self.vocabularies["_DENIAL_CODE_"])
+        # For Titanic, Survived is binary (0 or 1), not multi-class
+        # Create a simple denial code vocabulary for compatibility
+        self.vocabularies["_DENIAL_CODE_"] = {str(i): i for i in range(2)}
+        self.num_denial_classes = 2
         
         # Fit scaler on numeric features
         train_df[self.numeric_cols] = train_df[self.numeric_cols].astype(np.float32).fillna(0.0)
         self.scaler.fit(train_df[self.numeric_cols].values)
         
-        # Compute environment weights
-        payer_ids_train = train_df["PayerID"].astype(str).map(
-            self.vocabularies["PayerID"]
-        ).fillna(0).astype(int).values
-        self.env_weight_map = precompute_env_weights(payer_ids_train, clip=(0.5, 2.0))
+        # For Titanic, use Sex as environment for weighting
+        if "Sex" in train_df.columns:
+            sex_vocab = self.vocabularies["Sex"]
+            sex_ids = train_df["Sex"].astype(str).map(sex_vocab).fillna(0).astype(int).values
+            self.env_weight_map = precompute_env_weights(sex_ids, clip=(0.5, 2.0))
+        else:
+            self.env_weight_map = {0: 1.0, 1: 1.0}
         
         # Compute class imbalance weight
         p = float(train_df[TARGET_STATUS].mean())

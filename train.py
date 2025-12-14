@@ -253,10 +253,10 @@ def evaluate(
 
 def main():
     """Main training function."""
-    parser = argparse.ArgumentParser(description="Train Claims Denial Prediction Model")
+    parser = argparse.ArgumentParser(description="Train Titanic Survival Prediction Model")
     
     # Data arguments
-    parser.add_argument("--csv", type=str, required=True, help="Path to augmented_claims.csv")
+    parser.add_argument("--csv", type=str, default="dataset/train.csv", help="Path to train.csv")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation split ratio")
     parser.add_argument("--time_split", action="store_true", help="Use time-based split on SubmissionDate")
     parser.add_argument("--min_freq", type=int, default=1, help="Min frequency for categorical vocab")
@@ -272,10 +272,11 @@ def main():
     parser.add_argument("--expansion", type=float, default=2.0, help="MLP expansion factor")
     
     # Training arguments
-    parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
+    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
+    parser.add_argument("--weight_decay", type=float, default=5e-5, help="Weight decay")
+    parser.add_argument("--lr_scheduler", choices=["none", "cosine", "step"], default="cosine", help="Learning rate scheduler")
     parser.add_argument("--denial_w", type=float, default=1.0, help="Weight for denial status loss")
     parser.add_argument("--code_w", type=float, default=0.8, help="Weight for denial code loss")
     
@@ -364,6 +365,14 @@ def main():
         weight_decay=args.weight_decay
     )
     
+    # Setup learning rate scheduler
+    if args.lr_scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.1)
+    elif args.lr_scheduler == "step":
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.epochs // 3, gamma=0.5)
+    else:
+        scheduler = None
+    
     # Prepare positive weight tensor
     pos_weight_tensor = torch.tensor(data_processor.pos_weight, dtype=torch.float32).to(dev)
     
@@ -403,8 +412,13 @@ def main():
             f"Brier={metrics['brier']:.4f}\n"
             f"         code_acc={metrics['code_acc_denied']:.4f} | "
             f"code_top5={metrics['code_top5_denied']:.4f} | "
-            f"code_f1={metrics['code_f1_macro_denied']:.4f}"
+            f"code_f1={metrics['code_f1_macro_denied']:.4f}\n"
+            f"  LR: {optimizer.param_groups[0]['lr']:.6f}"
         )
+        
+        # Step scheduler
+        if scheduler is not None:
+            scheduler.step()
         
         # Save best model
         if metrics["loss"] < best_val_loss:
