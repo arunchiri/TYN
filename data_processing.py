@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claims Data Processing Module
-Handles all data preprocessing, feature engineering, and dataset creation for claims data.
+Data Processing Module
+Handles all data preprocessing, feature engineering, and dataset creation for data.
 """
 
 from typing import Dict, List, Tuple, Optional
@@ -216,7 +216,7 @@ def get_feature_columns(guard_leakage: bool = False) -> Tuple[List[str], List[st
 
 class ClaimsDataset(Dataset):
     """
-    PyTorch Dataset for claims data.
+    PyTorch Dataset for Titanic data.
     """
     
     def __init__(
@@ -262,7 +262,7 @@ class ClaimsDataset(Dataset):
         # Denial code with denied-only semantics if requested
         code_vocab = vocabularies["_DENIAL_CODE_"]
         if self.denied_only_code:
-            # Ignore non-denied claims for CE
+            # Ignore non-survied data for CE
             mapped = df_loc[target_code].astype(str).map(
                 lambda x: code_vocab.get(x, 0)
             ).astype(np.int64).values
@@ -426,14 +426,14 @@ class DataProcessor:
         use_env_weights: bool = False
     ) -> ClaimsDataset:
         """
-        Create a ClaimsDataset from a DataFrame.
+        Create a Dataset from a DataFrame.
         
         Args:
             df: DataFrame to create dataset from
             use_env_weights: Whether to use environment weights
         
         Returns:
-            ClaimsDataset instance
+            Dataset instance
         """
         env_map = self.env_weight_map if use_env_weights else None
         
